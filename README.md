@@ -1,46 +1,22 @@
-usage: git [--version] [--help] [-C <path>] [-c <name>=<value>]
-           [--exec-path[=<path>]] [--html-path] [--man-path] [--info-path]
-           [-p | --paginate | -P | --no-pager] [--no-replace-objects] [--bare]
-           [--git-dir=<path>] [--work-tree=<path>] [--namespace=<name>]
-           [--super-prefix=<path>] [--config-env=<name>=<envvar>]
-           <command> [<args>]
+This is a Go application that consumes messages from Kafka, which are produced by a Java application. 
 
-These are common Git commands used in various situations:
+The Java application inserts data into a database and publishes these insert operations as messages to a Kafka topic.
+The Go application uses the github.com/segmentio/kafka-go library to read messages from the Kafka cluster. It has a retry mechanism for handling read and processing errors, using separate goroutines and queues (ReadRetryQueue and ProcessRetryQueue) for each operation.
 
-start a working area (see also: git help tutorial)
-   clone             Clone a repository into a new directory
-   init              Create an empty Git repository or reinitialize an existing one
+When a message is successfully read from Kafka, it is sent to a ProcessRetryHandler implementation for processing. If a read error occurs, the message is added to the ReadRetryQueue, and a separate goroutine continually attempts to read it again until successful.
 
-work on the current change (see also: git help everyday)
-   add               Add file contents to the index
-   mv                Move or rename a file, a directory, or a symlink
-   restore           Restore working tree files
-   rm                Remove files from the working tree and from the index
-   sparse-checkout   Initialize and modify the sparse-checkout
+If a processing error occurs, the message is added to the ProcessRetryQueue, and another goroutine attempts to process it again until successful.
+Between each retry attempt, there is a backoff period determined by backoff.NextBackOff(). Retries continue until a maximum number of retries (options.MaxRetries) is reached.
 
-examine the history and state (see also: git help revisions)
-   bisect            Use binary search to find the commit that introduced a bug
-   diff              Show changes between commits, commit and working tree, etc
-   grep              Print lines matching a pattern
-   log               Show commit logs
-   show              Show various types of objects
-   status            Show the working tree status
 
-grow, mark and tweak your common history
-   branch            List, create, or delete branches
-   commit            Record changes to the repository
-   merge             Join two or more development histories together
-   rebase            Reapply commits on top of another base tip
-   reset             Reset current HEAD to the specified state
-   switch            Switch branches
-   tag               Create, list, delete or verify a tag object signed with GPG
+The order of messages is not important in this application. If message ordering is crucial, multiple consumers should be used.
+Both read and processing errors allow the main topic to continue being read (thanks to goroutines).
 
-collaborate (see also: git help workflows)
-   fetch             Download objects and refs from another repository
-   pull              Fetch from and integrate with another repository or a local branch
-   push              Update remote refs along with associated objects
+In case of a read error, the message is sent to the ReadRetryQueue and retried until successful. When successful, it is sent for processing.
+In case of a processing error, the message is sent to the ProcessRetryQueue and retried until successful.
 
-'git help -a' and 'git help -g' list available subcommands and some
-concept guides. See 'git help <command>' or 'git help <concept>'
-to read about a specific subcommand or concept.
-See 'git help git' for an overview of the system.
+New goroutines are not spawned for each new message. Instead, existing goroutines process the queued elements when errors occur.
+The backoff period is observed between retries, but a successful retry is not guaranteed (for both read and processing errors).
+
+Messages are retried for reading or processing until successful (only processing errors are simulated in the provided code).
+This application leverages Go's concurrency features (goroutines and channels) to provide a robust retry mechanism for handling Kafka messages produced by a Java application, ensuring fault tolerance and reliable message processing.
